@@ -56,22 +56,23 @@ def analyze_json_data(file_content, contamination_rate):
 
     # --- Step 1: Flatten Nested Dictionaries Iteratively ---
     st.info("Step 1: Flattening nested JSON objects...")
-    original_cols = df.columns.tolist()
-    while any(df[col].apply(lambda x: isinstance(x, dict)).any() for col in df.columns):
-        cols_to_flatten = [col for col in df.columns if df[col].apply(lambda x: isinstance(x, dict)).any()]
-        for col in cols_to_flatten:
+    # This loop now more robustly handles the mixed data types in log files
+    for col in df.columns:
+        if any(isinstance(x, dict) for x in df[col].dropna()):
             try:
-                flattened_df = pd.json_normalize(df[col].dropna()).add_prefix(f"{col}_")
-                df = df.join(flattened_df)
-                df = df.drop(columns=[col])
-            except Exception:
-                continue
+                # Use a prefix to avoid column name conflicts
+                flattened_df = pd.json_normalize(df[col][df[col].apply(lambda x: isinstance(x, dict))]).add_prefix(f"{col}_")
+                df = df.drop(columns=[col]).join(flattened_df)
+            except Exception as e:
+                st.warning(f"Warning: Could not flatten column '{col}'. Error: {e}")
+                
     st.success(f"DataFrame shape after flattening: **{df.shape}**")
 
     # --- Step 2: Handle Unhashable Types (Lists) ---
     st.info("Step 2: Handling unhashable list types...")
     for col in df.columns:
         if any(isinstance(x, list) for x in df[col].dropna()):
+            # Convert lists to a string representation for one-hot encoding
             df[col] = df[col].apply(lambda x: str(x) if isinstance(x, list) else x)
     st.success("Unhashable list types have been converted to strings.")
 
@@ -80,7 +81,7 @@ def analyze_json_data(file_content, contamination_rate):
     numerical_features = df.select_dtypes(include=np.number).columns.tolist()
     categorical_features = df.select_dtypes(include=['object', 'bool']).columns.tolist()
 
-    exclude_cols = ['timestamp', 'src_ip', 'dest_ip', 'flow_id']
+    exclude_cols = ['timestamp', 'src_ip', 'dest_ip', 'flow_id', 'in_iface', 'pkt_src', 'app_proto', 'proto']
     numerical_features = [col for col in numerical_features if col not in exclude_cols]
     categorical_features = [col for col in categorical_features if col not in exclude_cols]
     
@@ -181,8 +182,9 @@ def generate_visualizations(df, X):
     # 3. Anomaly Count by `event_type` (if exists)
     st.subheader("📊 Anomaly Count by Event Type")
     if 'event_type' in df.columns:
-        fig, ax = plt.subplots(figsize=(12, 6))
+        plt.figure(figsize=(12, 6))
         palette = {-1: 'red', 1: 'blue'}
+        fig, ax = plt.subplots()
         sns.countplot(x='event_type', hue='anomaly_prediction', data=df, palette=palette, ax=ax)
         ax.set_title('Anomaly Count by Event Type', fontsize=16)
         ax.set_xlabel('Event Type', fontsize=12)
@@ -238,9 +240,8 @@ if uploaded_file is not None:
                 top_anomalies = df.sort_values(by='anomaly_score', ascending=True).head(10)
                 
                 # Check for key columns before displaying
-                cols_to_display = ['timestamp', 'anomaly_score', 'event_type', 'src_ip', 'dest_ip']
-                available_cols = [col for col in cols_to_display if col in top_anomalies.columns]
-                st.dataframe(top_anomalies[available_cols])
+                cols_to_display = [col for col in ['timestamp', 'anomaly_score', 'event_type', 'src_ip', 'dest_ip'] if col in top_anomalies.columns]
+                st.dataframe(top_anomalies[cols_to_display])
                 
                 # --- Visualizations ---
                 st.markdown("---")
